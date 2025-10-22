@@ -94,7 +94,7 @@ app.layout = html.Div([
                     dcc.Tab(label='Overview', value='overview',style=tab_style['idle'],selected_style=tab_style['active']),
                     dcc.Tab(label='Attractions', value='attractions',style=tab_style['idle'],selected_style=tab_style['active']),
                     dcc.Tab(label='Trip Planner', value='planner', style=tab_style['idle'], selected_style=tab_style['active']),
-
+                    dcc.Tab(label='Country Compare', value='compare', style=tab_style['idle'], selected_style=tab_style['active']),
 
                     # 若有其他頁面可以自行增加
                     # dcc.Tab(label='Other Page', value='other_page',style=tab_style['idle'],selected_style=tab_style['active']),
@@ -347,6 +347,73 @@ def render_tab_content(tab): # 針對上述的input值要做的處理，tab = In
             dcc.Loading([html.Div(id='planner-table-container')], type='default', color='#deb522')
         ])
 
+    elif tab == 'compare':
+        # 返回 'Country Compare' 頁面的佈局
+        all_destinations = sorted(df_merged['Destination'].dropna().unique().tolist())
+        
+        return html.Div([
+            html.H3("Country Comparison：多國深度對比分析", style={'color': '#deb522', 'margin-top': '5px'}),
+            
+            # 選擇要比較的國家（最多5個）
+            dbc.Row([
+                dbc.Col([
+                    html.Label("選擇要比較的國家（最多5個）", style={'color': '#deb522', 'fontWeight': 'bold'}),
+                    dcc.Dropdown(
+                        id='compare-countries',
+                        options=[{'label': c, 'value': c} for c in all_destinations],
+                        value=['USA', 'Japan', 'France'] if all(c in all_destinations for c in ['USA', 'Japan', 'France']) else all_destinations[:3],
+                        multi=True,
+                        style={'backgroundColor': '#deb522', 'color': 'black'}
+                    )
+                ], width=12)
+            ], style={'marginBottom': '20px'}),
+            
+            # 選擇比較的指標
+            dbc.Row([
+                dbc.Col([
+                    html.Label("選擇比較指標", style={'color': '#deb522', 'fontWeight': 'bold'}),
+                    dcc.Checklist(
+                        id='compare-metrics',
+                        options=[
+                            {'label': ' 安全指數 (Safety Index)', 'value': 'safety'},
+                            {'label': ' 消費物價指數 (CPI)', 'value': 'cpi'},
+                            {'label': ' 個人消費支出 (PCE)', 'value': 'pce'},
+                            {'label': ' 平均住宿成本', 'value': 'accommodation'},
+                            {'label': ' 平均交通成本', 'value': 'transportation'},
+                            {'label': ' 遊客人數統計', 'value': 'travelers'},
+                        ],
+                        value=['safety', 'cpi', 'accommodation'],
+                        inputStyle={'marginRight': '6px'},
+                        labelStyle={'color': '#deb522', 'display': 'block', 'marginBottom': '8px'}
+                    )
+                ], width=6),
+                dbc.Col([
+                    html.Label("圖表類型", style={'color': '#deb522', 'fontWeight': 'bold'}),
+                    dcc.RadioItems(
+                        id='compare-chart-type',
+                        options=[
+                            {'label': ' 雷達圖 (Radar Chart)', 'value': 'radar'},
+                            {'label': ' 長條圖 (Bar Chart)', 'value': 'bar'},
+                            {'label': ' 折線圖 (Line Chart)', 'value': 'line'},
+                        ],
+                        value='radar',
+                        inputStyle={'marginRight': '6px'},
+                        labelStyle={'color': '#deb522', 'display': 'block', 'marginBottom': '8px'}
+                    )
+                ], width=6)
+            ], style={'marginBottom': '20px'}),
+            
+            # 圖表顯示區域
+            dcc.Loading([
+                html.Div(id='compare-chart-container')
+            ], type='default', color='#deb522'),
+            
+            # 詳細數據表格
+            html.H4("詳細數據對比", style={'color': '#deb522', 'margin-top': '30px'}),
+            dcc.Loading([
+                html.Div(id='compare-table-container')
+            ], type='default', color='#deb522')
+        ])
 
     else:
         return html.Div("選擇的標籤頁不存在。", style={'color': 'white'})
@@ -700,6 +767,187 @@ def update_trip_planner_table(cost_min, cost_max, acc_types,
         ]
     )
 
+
+
+# ===== 新功能：Country Compare 的 Callback =====
+@app.callback(
+    [Output('compare-chart-container', 'children'),
+     Output('compare-table-container', 'children')],
+    [Input('compare-countries', 'value'),
+     Input('compare-metrics', 'value'),
+     Input('compare-chart-type', 'value'),
+     Input('graph-tabs', 'value')]
+)
+def update_country_comparison(countries, metrics, chart_type, tab):
+    if tab != 'compare':
+        return no_update, no_update
+    
+    if not countries or not metrics:
+        return html.Div("請至少選擇一個國家和一個指標。", style={'color': 'white'}), None
+    
+    # 限制最多5個國家
+    if len(countries) > 5:
+        countries = countries[:5]
+    
+    # 準備數據
+    df_compare = df_merged[df_merged['Destination'].isin(countries)].copy()
+    
+    if df_compare.empty:
+        return html.Div("所選國家沒有數據。", style={'color': 'white'}), None
+    
+    # 計算各項指標的統計值
+    comparison_data = []
+    
+    for country in countries:
+        country_data = df_compare[df_compare['Destination'] == country]
+        
+        row = {'Country': country}
+        
+        # 安全指數
+        if 'safety' in metrics and 'Safety Index' in country_data.columns:
+            safety = country_data['Safety Index'].dropna()
+            row['Safety Index'] = safety.iloc[0] if not safety.empty else np.nan
+        
+        # CPI
+        if 'cpi' in metrics and 'CPI' in country_data.columns:
+            cpi = country_data['CPI'].dropna()
+            row['CPI'] = cpi.iloc[0] if not cpi.empty else np.nan
+        
+        # PCE
+        if 'pce' in metrics and 'PCE' in country_data.columns:
+            pce = country_data['PCE'].dropna()
+            row['PCE'] = pce.iloc[0] if not pce.empty else np.nan
+        
+        # 平均住宿成本
+        if 'accommodation' in metrics and 'Accommodation cost' in country_data.columns:
+            acc_cost = pd.to_numeric(country_data['Accommodation cost'], errors='coerce')
+            row['Avg Accommodation Cost'] = acc_cost.mean() if not acc_cost.isna().all() else np.nan
+        
+        # 平均交通成本
+        if 'transportation' in metrics and 'Transportation cost' in country_data.columns:
+            trans_cost = pd.to_numeric(country_data['Transportation cost'], errors='coerce')
+            row['Avg Transportation Cost'] = trans_cost.mean() if not trans_cost.isna().all() else np.nan
+        
+        # 遊客人數
+        if 'travelers' in metrics:
+            row['Total Travelers'] = len(country_data)
+        
+        comparison_data.append(row)
+    
+    df_result = pd.DataFrame(comparison_data)
+    
+    # 生成圖表
+    import plotly.graph_objects as go
+    
+    # 準備圖表數據
+    metric_columns = [col for col in df_result.columns if col != 'Country']
+    
+    if chart_type == 'radar':
+        # 雷達圖
+        fig = go.Figure()
+        
+        # 標準化數據（0-100）用於雷達圖
+        df_normalized = df_result.copy()
+        for col in metric_columns:
+            if col in df_normalized.columns:
+                vals = pd.to_numeric(df_normalized[col], errors='coerce')
+                if not vals.isna().all():
+                    min_val, max_val = vals.min(), vals.max()
+                    if max_val > min_val:
+                        df_normalized[col] = 100 * (vals - min_val) / (max_val - min_val)
+                    else:
+                        df_normalized[col] = 50
+        
+        for idx, row in df_normalized.iterrows():
+            values = [row[col] if pd.notna(row[col]) else 0 for col in metric_columns]
+            values.append(values[0])  # 閉合雷達圖
+            
+            fig.add_trace(go.Scatterpolar(
+                r=values,
+                theta=metric_columns + [metric_columns[0]],
+                fill='toself',
+                name=row['Country']
+            ))
+        
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 100])
+            ),
+            showlegend=True,
+            template='plotly_dark',
+            font=dict(color='#deb522'),
+            title='多國指標雷達對比圖 (標準化 0-100)',
+            height=600
+        )
+    
+    elif chart_type == 'bar':
+        # 長條圖
+        fig = go.Figure()
+        
+        for col in metric_columns:
+            if col in df_result.columns:
+                fig.add_trace(go.Bar(
+                    name=col,
+                    x=df_result['Country'],
+                    y=pd.to_numeric(df_result[col], errors='coerce'),
+                    text=pd.to_numeric(df_result[col], errors='coerce').round(2),
+                    textposition='auto'
+                ))
+        
+        fig.update_layout(
+            barmode='group',
+            template='plotly_dark',
+            font=dict(color='#deb522'),
+            title='多國指標長條對比圖',
+            xaxis_title='Country',
+            yaxis_title='Value',
+            height=600
+        )
+    
+    else:  # line chart
+        # 折線圖
+        fig = go.Figure()
+        
+        for col in metric_columns:
+            if col in df_result.columns:
+                fig.add_trace(go.Scatter(
+                    x=df_result['Country'],
+                    y=pd.to_numeric(df_result[col], errors='coerce'),
+                    mode='lines+markers+text',
+                    name=col,
+                    text=pd.to_numeric(df_result[col], errors='coerce').round(2),
+                    textposition='top center'
+                ))
+        
+        fig.update_layout(
+            template='plotly_dark',
+            font=dict(color='#deb522'),
+            title='多國指標折線對比圖',
+            xaxis_title='Country',
+            yaxis_title='Value',
+            height=600
+        )
+    
+    chart_div = html.Div([
+        dcc.Graph(figure=fig)
+    ])
+    
+    # 生成詳細數據表格
+    df_display = df_result.copy()
+    for col in df_display.columns:
+        if col != 'Country':
+            df_display[col] = df_display[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    
+    table_div = dash_table.DataTable(
+        data=df_display.to_dict('records'),
+        columns=[{'name': col, 'id': col} for col in df_display.columns],
+        style_data={'backgroundColor': '#deb522', 'color': 'black'},
+        style_header={'backgroundColor': 'black', 'color': '#deb522', 'fontWeight': 'bold'},
+        style_table={'overflowX': 'auto'},
+        export_format='csv'
+    )
+    
+    return chart_div, table_div
 
 
 if __name__ == '__main__':
