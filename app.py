@@ -1,8 +1,11 @@
-from dash import Dash, html, dcc, Input, Output, dash_table, callback, no_update
+from dash import Dash, html, dcc, Input, State, Output, dash_table, no_update
+from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import pandas as pd
 import numpy as np
-
+import dash_leaflet as dl
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 # 導入其他模組中的函數
 from src.const import get_constants
 from src.generate_visualization import generate_bar, generate_pie, generate_map, generate_box
@@ -241,23 +244,42 @@ def render_tab_content(tab): # 針對上述的input值要做的處理，tab = In
         ])
     # 可參考簡報 Callback function (multiValueDropdown.py )
     elif tab == 'attractions':
-        # 返回 'Attractions' 頁面的佈局
         return html.Div([
             dcc.Dropdown(
                 options=[{'label': country, 'value': country} for country in country_list],
-                value=['Australia'],
+                value='Australia',  # 單一值，不是 list
                 id='attractions-dropdown',
-                multi=True,  # 啟用多選功能
+                multi=False,  # 單選
+                style={'backgroundColor': '#deb522', 'color': 'black'}
+            ),
+            html.Button(
+                "查詢",
+                id='attractions-submit',
+                n_clicks=0,
+                className="btn btn-primary",
                 style={
-                    'backgroundColor': '#deb522',  # 下拉式選單背景顏色
-                    'color': 'black'               # 下拉式選單文字顏色
+                    'backgroundColor': '#deb522',
+                    'color': 'black',
+                    'fontWeight': 'bold',
+                    'marginTop': '10px',
+                    'padding': '6px 16px',
+                    'borderRadius': '6px',
+                    'border': 'none',
+                    'cursor': 'pointer'
                 }
             ),
-            html.Div(
-                id='attractions-output-container',
-                style = {'overflow-x': 'auto'}
+            dcc.Loading(
+                id="attractions-loading",
+                type="circle",  # 可改成 "default" / "cube" / "dot"
+                color="#deb522",
+                fullscreen=False,  # 若想覆蓋全頁可設 True
+                children=[
+                    html.Div(id='attractions-output-container', style={'overflow-x': 'auto', 'marginTop': '10px'}),
+                    html.Div(id='attractions-map-container', style={'height': '600px', 'marginTop': '16px'})
+                ]
             )
         ])
+
     elif tab == 'planner':
         accommodation_types = sorted(travel_df['Accommodation type'].dropna().unique().tolist())
 
@@ -517,31 +539,100 @@ def update_box_chart(dropdown_value_1, dropdown_value_2, tab): # 針對上述的
 
 # 景點下拉式選單回調
 @app.callback(
-    Output('attractions-output-container', 'children'),
-    Input('attractions-dropdown', 'value'),
-    Input('graph-tabs', 'value')
+    [Output('attractions-output-container', 'children'),
+     Output('attractions-map-container', 'children')],
+    [Input('attractions-submit', 'n_clicks'),
+     Input('graph-tabs', 'value')],
+    [State('attractions-dropdown', 'value')],
+    prevent_initial_call=True
 )
-def update_attractions_output(chosen_countries, tab):
+def update_attractions_output(n_clicks, tab, chosen_country):
     if tab != 'attractions':
-        return no_update
-    # 檢查是否有選擇國家
-    if not chosen_countries:
-        return html.Div("請選擇至少一個國家。", style={'color': 'white'})
-    # 過濾出選擇的國家
-    chosen_df = attractions_df[attractions_df['country'].isin(chosen_countries)]
-    return dash_table.DataTable(
+        raise PreventUpdate
+
+    if n_clicks == 0 or not chosen_country:
+        return (
+            html.Div("請選擇一個國家並按下查詢。", style={'color': 'white'}),
+            no_update
+        )
+
+    # --- 過濾景點 ---
+    chosen_df = attractions_df[attractions_df['country'] == chosen_country].copy()
+
+    # 表格（沿用你原本樣式）
+    table = dash_table.DataTable(
         data=chosen_df.to_dict('records'),
         page_size=10,
-        style_data={
-            'backgroundColor': '#deb522',
-            'color': 'black',
-        },
-        style_header={
-            'backgroundColor': 'black',  # 修改表頭背景顏色
-            'color': '#deb522',          # 修改表頭文字顏色
-            'fontWeight': 'bold',
-        }
+        style_data={'backgroundColor': '#deb522', 'color': 'black'},
+        style_header={'backgroundColor': 'black', 'color': '#deb522', 'fontWeight': 'bold'}
     )
+
+    # --- 找欄位 ---
+    def pick_col(cands):
+        for c in cands:
+            if c in chosen_df.columns:
+                return c
+        return None
+    name_col = pick_col(['attraction', 'Attraction'])
+    if not name_col:
+        # 若找不到名稱欄位，就隨便挑第一個 column 試著當作景點名稱
+        name_col = chosen_df.columns[0]
+
+    # --- 用 Nominatim 免費查地點座標 ---
+    geolocator = Nominatim(user_agent="my_dash_app")
+    geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)  # 避免頻率太高被拒
+
+    points = []
+    for _, r in chosen_df.iterrows():
+        name = str(r[name_col])
+        try:
+            location = geocode(name)
+            if location:
+                points.append({'name': name, 'lat': location.latitude, 'lng': location.longitude})
+        except Exception as e:
+            continue
+
+    if not points:
+        return table, html.Div("選定國家目前沒有可用座標的景點。", style={'color': 'white'})
+
+    # --- Leaflet layers & markers ---
+    # OSM 瓦片（免金鑰），注意 attribution 必填
+    tile_layer = dl.TileLayer(
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    )
+
+    # 建立 marker 清單（點擊顯示名稱）
+    markers = [
+        dl.Marker(position=[p['lat'], p['lng']], children=dl.Tooltip(p['name']))
+        for p in points
+    ]
+
+    # 自動計算 bounds（以便 fitBounds）
+    lats = [p['lat'] for p in points]
+    lngs = [p['lng'] for p in points]
+    south, west = min(lats), min(lngs)
+    north, east = max(lats), max(lngs)
+    bounds = [[south, west], [north, east]]
+
+    # 如果只有一個點，就用預設中心與較大 zoom
+    if len(points) == 1:
+        center = [points[0]['lat'], points[0]['lng']]
+        zoom = 10
+        the_map = dl.Map(
+            id=f"map-{hash(str(bounds))}",
+            children=[tile_layer, dl.LayerGroup(markers)],
+            center=center, zoom=zoom, style={'width': '100%', 'height': '600px'}
+        )
+    else:
+        the_map = dl.Map(
+            id=f"map-{hash(str(bounds))}",
+            children=[tile_layer, dl.LayerGroup(markers)],
+            bounds=bounds,
+            style={'width': '100%', 'height': '600px'}
+        )
+
+    return table, the_map
 
 
 @app.callback(
