@@ -1,5 +1,9 @@
 import pandas as pd
 
+ALERT_RANK_MAP = {'灰色': 2, '黃色': 3, '橙色': 4}
+ALL_COMPARE_METRICS = ['safety', 'cpi', 'pce', 'accommodation', 'transportation', 'travelers']
+
+
 def get_constants(travel_df):
     """
     計算旅遊資料的主要統計數據 (Compute key travel statistics).
