@@ -17,7 +17,6 @@ from src.utils import (
     prepare_country_compare_data, build_compare_figure, generate_stats_card, is_exempt, minmax, fmt
 )
 
-
 #################
 #### 基礎設置 ####
 #################
@@ -32,6 +31,20 @@ country_info_df = countryinfo_data_clean(country_info_df)
 
 # 合併 travel_df 和 country_info_df，方便後續分析
 df_merged = data_merge(travel_df, country_info_df)
+
+# 設定 Overview 頁面預設值
+_conts = [c for c in df_merged['Continent'].dropna().unique().tolist() if str(c).strip() != ""]
+_dests = [d for d in df_merged['Destination'].dropna().unique().tolist() if str(d).strip() != ""]
+_first_geo = (_conts[0] if _conts else (_dests[0] if _dests else None))
+DEFAULTS = {
+    "bar1_geo": _first_geo,
+    "pie1_geo": _first_geo,
+    "pie2_field": "Traveler nationality",
+    "map1_geo": None,                 # None 代表 All
+    "map2_metric": "Safety Index",
+    "box1_geo": _first_geo,
+    "box2_metric": "Accommodation cost",
+}
 
 # 獲取國家名稱列表（景點頁使用）
 country_list = list(attractions_df['country'].unique())
@@ -110,6 +123,10 @@ app.layout = html.Div([
 )
 def render_tab_content(tab):
     if tab == 'overview':
+        # 建立地理選項（洲 + 國家）
+        geo_options = [{'label': i, 'value': i}
+                       for i in pd.concat([df_merged['Continent'], df_merged['Destination']]).dropna().unique()]
+
         return html.Div([
             # 第一排：長條 + 圓餅
             dbc.Row([
@@ -117,8 +134,8 @@ def render_tab_content(tab):
                     html.H3("各大洲或各國不同月份遊客人数", style={'color': '#deb522', 'margin-top': '5px'}),
                     dcc.Dropdown(
                         id='dropdown-bar-1',
-                        options=[{'label': i, 'value': i}
-                                 for i in pd.concat([df_merged['Continent'], df_merged['Destination']]).unique()],
+                        options=geo_options,
+                        value=DEFAULTS["bar1_geo"],
                         placeholder='Select a continent or country',
                         style={'width': '90%','margin-top': '10px','margin-bottom': '10px'}
                     )
@@ -127,8 +144,8 @@ def render_tab_content(tab):
                     html.H3("各大洲或各國的遊客屬性、住宿及交通類型", style={'color': '#deb522', 'margin-top': '5px'}),
                     dcc.Dropdown(
                         id='dropdown-pie-1',
-                        options=[{'label': i, 'value': i}
-                                 for i in pd.concat([df_merged['Continent'], df_merged['Destination']]).unique()],
+                        options=geo_options,
+                        value=DEFAULTS["pie1_geo"],
                         placeholder='Select a continent or country',
                         style={'width': '50%','margin':'5px 0','display': 'inline-block'}
                     ),
@@ -136,6 +153,7 @@ def render_tab_content(tab):
                         id='dropdown-pie-2',
                         options=[{'label': i, 'value': i}
                                  for i in ['Traveler nationality','Age group','Traveler gender','Accommodation type','Transportation type']],
+                        value=DEFAULTS["pie2_field"],
                         placeholder='Select a value',
                         style={'width': '50%','margin':'5px 0','display': 'inline-block'}
                     )
@@ -152,13 +170,15 @@ def render_tab_content(tab):
                     dcc.Dropdown(
                         id='dropdown-map-1',
                         options=[{'label': 'All', 'value': None}]
-                                + [{'label': i, 'value': i} for i in df_merged['Continent'].unique()],
-                        placeholder='Select a continent or country',
+                                + [{'label': i, 'value': i} for i in df_merged['Continent'].dropna().unique()],
+                        value=DEFAULTS["map1_geo"],
+                        placeholder='Select a continent',
                         style={'width': '50%','margin':'5px 0','display': 'inline-block'}
                     ),
                     dcc.Dropdown(
                         id='dropdown-map-2',
                         options=[{'label': i, 'value': i} for i in ['Safety Index','Crime_index','CPI','PCE','Exchange_rate']],
+                        value=DEFAULTS["map2_metric"],
                         placeholder='Select a value',
                         style={'width': '50%','margin':'5px 0','display': 'inline-block'}
                     )
@@ -168,13 +188,15 @@ def render_tab_content(tab):
                     dcc.Dropdown(
                         id='dropdown-box-1',
                         options=[{'label': i, 'value': i}
-                                 for i in pd.concat([df_merged['Continent'], df_merged['Destination']]).unique()],
+                                 for i in pd.concat([df_merged['Continent'], df_merged['Destination']]).dropna().unique()],
+                        value=DEFAULTS["box1_geo"],
                         placeholder='Select a continent or country',
                         style={'width': '50%','margin':'5px 0','display': 'inline-block'}
                     ),
                     dcc.Dropdown(
                         id='dropdown-box-2',
                         options=[{'label': i, 'value': i} for i in ['Accommodation cost','Transportation cost']],
+                        value=DEFAULTS["box2_metric"],
                         placeholder='Select a value',
                         style={'width': '50%','margin':'5px 0','display': 'inline-block'}
                     )
@@ -303,7 +325,9 @@ def update_bar_chart(dropdown_value, tab):
     if tab != 'overview':
         return no_update
     df = load_data('travel')
-    fig1 = generate_bar(df, dropdown_value)
+    # 安全 fallback：若使用者清空下拉，回到預設
+    geo = dropdown_value or DEFAULTS["bar1_geo"]
+    fig1 = generate_bar(df, geo)
     return html.Div([dcc.Graph(id='graph1', figure=fig1)], style={'width': '90%','display': 'inline-block'})
 
 @app.callback(
@@ -314,7 +338,9 @@ def update_pie_chart(dropdown_value_1, dropdown_value_2, tab):
     if tab != 'overview':
         return no_update
     df = load_data('travel')
-    fig2 = generate_pie(df, dropdown_value_1, dropdown_value_2)
+    geo = dropdown_value_1 or DEFAULTS["pie1_geo"]
+    field = dropdown_value_2 or DEFAULTS["pie2_field"]
+    fig2 = generate_pie(df, geo, field)
     return html.Div([dcc.Graph(id='graph2', figure=fig2)], style={'width': '90%','display': 'inline-block'})
 
 @app.callback(
@@ -325,7 +351,9 @@ def update_map(dropdown_value_1, dropdown_value_2, tab):
     if tab != 'overview':
         return no_update
     df = load_data('travel')
-    fig3 = generate_map(df, dropdown_value_1, dropdown_value_2)
+    geo = dropdown_value_1 if dropdown_value_1 in _conts or dropdown_value_1 is None else DEFAULTS["map1_geo"]
+    metric = dropdown_value_2 or DEFAULTS["map2_metric"]
+    fig3 = generate_map(df, geo, metric)
     return html.Div([dcc.Graph(id='graph3', figure=fig3)], style={'width': '90%','display': 'inline-block'})
 
 @app.callback(
@@ -336,7 +364,9 @@ def update_box_chart(dropdown_value_1, dropdown_value_2, tab):
     if tab != 'overview':
         return no_update
     df = load_data('travel')
-    fig4 = generate_box(df, dropdown_value_1, dropdown_value_2)
+    geo = dropdown_value_1 or DEFAULTS["box1_geo"]
+    metric = dropdown_value_2 or DEFAULTS["box2_metric"]
+    fig4 = generate_box(df, geo, metric)
     return html.Div([dcc.Graph(id='graph4', figure=fig4)], style={'width': '90%','display': 'inline-block'})
 
 ####################################
@@ -496,7 +526,7 @@ def update_trip_planner_table(cost_min, cost_max, acc_types,
 
     return table_component, compare_countries
 
-# 產生雷達圖
+# 產生雷達 / 長條 / 折線圖（前五名 + 全指標）
 @app.callback(
     [Output('planner-compare-radar', 'children'),
      Output('planner-compare-bar', 'children'),
