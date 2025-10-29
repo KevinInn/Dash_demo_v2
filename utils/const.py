@@ -2,7 +2,18 @@ import pandas as pd
 
 ALERT_RANK_MAP = {'灰色': 2, '黃色': 3, '橙色': 4}
 ALL_COMPARE_METRICS = ['safety', 'cpi', 'pce', 'accommodation', 'transportation', 'travelers']
-
+TAB_STYLE = {
+    'idle': {
+        'borderRadius': '10px','padding': '0px','marginInline': '5px','display':'flex',
+        'alignItems':'center','justifyContent':'center','fontWeight': 'bold',
+        'backgroundColor': '#deb522','border':'none'
+    },
+    'active': {
+        'borderRadius': '10px','padding': '0px','marginInline': '5px','display':'flex',
+        'alignItems':'center','justifyContent':'center','fontWeight': 'bold','border':'none',
+        'textDecoration': 'underline','backgroundColor': '#deb522'
+    }
+}
 
 def get_constants(travel_df):
     """

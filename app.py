@@ -9,17 +9,33 @@ import dash_leaflet as dl
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 
-# 從./src導入所有自定義函數
-from src.const import get_constants, ALERT_RANK_MAP, ALL_COMPARE_METRICS
-from src.generate_visualization import generate_bar, generate_pie, generate_map, generate_box
-from src.data_clean import travel_data_clean, countryinfo_data_clean, data_merge
-from src.utils import (
-    prepare_country_compare_data, build_compare_figure, generate_stats_card, is_exempt, minmax, fmt
+# 從./utils導入所有自定義函數
+from utils.const import get_constants, TAB_STYLE, ALL_COMPARE_METRICS
+from utils.data_clean import travel_data_clean, countryinfo_data_clean, data_merge
+from utils.data_transform import (
+    prepare_country_compare_data, 
+    get_dashboard_default_values, 
+    get_alert_rank, 
+    sanitize_cost_bounds, 
+    filter_by_cost_and_types, 
+    preprocess_travel_df,
+    pick_country_level,
+    filter_by_alert_and_visa,
+    compute_scores,
+)
+from utils.visualization import (
+    build_compare_figure, 
+    generate_stats_card, 
+    generate_bar, 
+    generate_pie, 
+    generate_map, 
+    generate_box,
+    build_table_component
 )
 
-#################
-#### 基礎設置 ####
-#################
+########################
+#### 資料載入與前處理 ####
+########################
 # 加載欲分析的資料集
 travel_df = pd.read_csv('./data/Travel_dataset.csv')  # 旅遊資訊
 country_info_df = pd.read_csv('./data/country_info.csv')  # 國家資訊
@@ -32,49 +48,26 @@ country_info_df = countryinfo_data_clean(country_info_df)
 # 合併 travel_df 和 country_info_df，方便後續分析
 df_merged = data_merge(travel_df, country_info_df)
 
-# 設定 Overview 頁面預設值
-_conts = [c for c in df_merged['Continent'].dropna().unique().tolist() if str(c).strip() != ""]
-_dests = [d for d in df_merged['Destination'].dropna().unique().tolist() if str(d).strip() != ""]
-_first_geo = (_conts[0] if _conts else (_dests[0] if _dests else None))
-DEFAULTS = {
-    "bar1_geo": _first_geo,
-    "pie1_geo": _first_geo,
-    "pie2_field": "Traveler nationality",
-    "map1_geo": None,                 # None 代表 All
-    "map2_metric": "Safety Index",
-    "box1_geo": _first_geo,
-    "box2_metric": "Accommodation cost",
-}
+# 呼叫 ./utils/const.py 中的 get_constants() 函式（畫面上方四格統計）
+num_of_country, num_of_traveler, num_of_nationality, avg_days = get_constants(travel_df)
 
 # 獲取國家名稱列表（景點頁使用）
 country_list = list(attractions_df['country'].unique())
+
+# 設定 Overview 頁面預設值
+DEFAULTS = get_dashboard_default_values(df_merged)
 
 # 切換頁面（如有需要可以自行增加）
 def load_data(tab):
     if tab in ('travel', 'planner'):
         return df_merged
 
-# 呼叫 ./src/const.py 中的 get_constants() 函式（畫面上方四格統計）
-num_of_country, num_of_traveler, num_of_nationality, avg_days = get_constants(travel_df)
-
-# 初始化應用程式
+##########################
+####   初始化應用程式   ####
+##########################
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
            title='Travel Data Analysis Dashboard', suppress_callback_exceptions=True)
 server = app.server
-
-# 外觀設定
-tab_style = {
-    'idle': {
-        'borderRadius': '10px','padding': '0px','marginInline': '5px','display':'flex',
-        'alignItems':'center','justifyContent':'center','fontWeight': 'bold',
-        'backgroundColor': '#deb522','border':'none'
-    },
-    'active': {
-        'borderRadius': '10px','padding': '0px','marginInline': '5px','display':'flex',
-        'alignItems':'center','justifyContent':'center','fontWeight': 'bold','border':'none',
-        'textDecoration': 'underline','backgroundColor': '#deb522'
-    }
-}
 
 # ===== 版面配置 =====
 app.layout = html.Div([
@@ -85,11 +78,11 @@ app.layout = html.Div([
             dbc.Col(
                 dcc.Tabs(id='graph-tabs', value='overview', children=[
                     dcc.Tab(label='Overview', value='overview',
-                            style=tab_style['idle'], selected_style=tab_style['active']),
+                            style=TAB_STYLE['idle'], selected_style=TAB_STYLE['active']),
                     dcc.Tab(label='Trip Planner', value='planner',
-                            style=tab_style['idle'], selected_style=tab_style['active']),
+                            style=TAB_STYLE['idle'], selected_style=TAB_STYLE['active']),
                     dcc.Tab(label='Attractions', value='attractions',
-                            style=tab_style['idle'], selected_style=tab_style['active']),
+                            style=TAB_STYLE['idle'], selected_style=TAB_STYLE['active']),
                 ], style={'height':'50px'}),
                 width=7, style={'alignSelf': 'center'}
             ),
@@ -208,44 +201,38 @@ def render_tab_content(tab):
             ]),
         ])
 
-    elif tab == 'attractions':
-        return html.Div([
-            dcc.Dropdown(
-                options=[{'label': country, 'value': country} for country in country_list],
-                value='Australia', id='attractions-dropdown', multi=False,
-                style={'backgroundColor': '#deb522', 'color': 'black'}
-            ),
-            html.Button(
-                "查詢", id='attractions-submit', n_clicks=0, className="btn btn-primary",
-                style={'backgroundColor': '#deb522','color': 'black','fontWeight': 'bold',
-                       'marginTop': '10px','padding': '6px 16px','borderRadius': '6px','border': 'none','cursor': 'pointer'}
-            ),
-            dcc.Loading(
-                id="attractions-loading", type="circle", color="#deb522", fullscreen=False,
-                children=[html.Div(id='attractions-output-container', style={'overflow-x': 'auto','marginTop': '10px'}),
-                          html.Div(id='attractions-map-container', style={'height': '600px','marginTop': '16px'})]
-            )
-        ])
-
     elif tab == 'planner':
+        # 從資料集中取得所有住宿類型
         accommodation_types = sorted(travel_df['Accommodation type'].dropna().unique().tolist())
 
-        # 動態取得所有 Travel Alert 值（聯集）
+        # 從 country_info_df 中取出所有「Travel Alert」欄位的值
         alerts_from_country = country_info_df['Travel Alert'].dropna().astype(str).str.strip().tolist() \
                               if 'Travel Alert' in country_info_df.columns else []
+        # 從 df_merged 中取出所有「Travel Alert」欄位的值
         alerts_from_merged = df_merged['Travel Alert'].dropna().astype(str).str.strip().tolist() \
                              if 'Travel Alert' in df_merged.columns else []
+        # 合併兩者並去除重複值
         seen_alerts = sorted(set(alerts_from_country) | set(alerts_from_merged))
+        # 根據等級排序所有警示顏色
+        sorted_alerts = sorted(seen_alerts, key=get_alert_rank)
+        # 轉換成 Dash 下拉選單需要的格式
+        color_options = []
+        for alert in sorted_alerts:
+            color_options.append({
+                'label': alert,   # 顯示在畫面上的文字
+                'value': alert    # 實際回傳的值
+            })  
+        # 預設選項為最安全的顏色
+        if len(color_options) > 0:
+            default_alert = color_options[0]['value']
+        else:
+            default_alert = None
 
-        default_rank = 3
-        def alert_sort_key(c): return ALERT_RANK_MAP.get(c, default_rank)
-        color_options = [{'label': c, 'value': c} for c in sorted(seen_alerts, key=alert_sort_key)]
-        default_alert = ('灰色' if '灰色' in seen_alerts else (color_options[0]['value'] if color_options else None))
-
+        # 回傳 Trip Planner 頁面的版面配置
         return html.Div([
             dcc.Store(id='planner-selected-countries', data=[]),  # 只用來存「前五名」供比較圖表使用
 
-            html.H3("Trip Planner：用預算、安全與住宿偏好找國家", style={'color': '#deb522', 'margin-top': '5px'}),
+            html.H3("Trip Planner：用預算、安全與住宿偏好找旅遊國家", style={'color': '#deb522', 'margin-top': '5px'}),
 
             # 篩選列 1：住宿費用 & 住宿類型
             dbc.Row([
@@ -286,7 +273,7 @@ def render_tab_content(tab):
                 ], width=6),
             ], style={'marginBottom': '12px'}),
 
-            # 權重
+            # 權重設定
             dbc.Row([
                 dbc.Col([
                     html.Label("Weights（0–10）：Safety / Cost", style={'color': '#deb522'}),
@@ -297,6 +284,7 @@ def render_tab_content(tab):
                 ], width=12),
             ], style={'marginBottom': '8px'}),
 
+            # 顯示推薦國家表格
             dcc.Loading([html.Div(id='planner-table-container')], type='default', color='#deb522'),
 
             html.Hr(style={'borderColor': '#deb522'}),
@@ -312,24 +300,53 @@ def render_tab_content(tab):
             ], style={'marginBottom': '12px'}),
         ])
 
+    elif tab == 'attractions':
+        return html.Div([
+            # 選擇欲顯示Attrations列表與地圖的國家(下拉式選單)
+            dcc.Dropdown(
+                options=[{'label': country, 'value': country} for country in country_list],
+                value='Australia', id='attractions-dropdown', multi=False,
+                style={'backgroundColor': '#deb522', 'color': 'black'}
+            ),
+            # 查詢按鈕
+            html.Button(
+                "查詢", id='attractions-submit', n_clicks=0, className="btn btn-primary",
+                style={'backgroundColor': '#deb522','color': 'black','fontWeight': 'bold',
+                       'marginTop': '10px','padding': '6px 16px','borderRadius': '6px','border': 'none','cursor': 'pointer'}
+            ),
+            # 顯示景點列表與地圖的區域 (包在dcc.loading裡面就會在載入時顯示載入動畫)
+            dcc.Loading(
+                id="attractions-loading", type="circle", color="#deb522", fullscreen=False,
+                children=[html.Div(id='attractions-output-container', style={'overflow-x': 'auto','marginTop': '10px'}),
+                          html.Div(id='attractions-map-container', style={'height': '600px','marginTop': '16px'})]
+            )
+        ])
     return html.Div("選擇的標籤頁不存在。", style={'color': 'white'})
 
 ####################################
 #### Overview 頁面圖表 callbacks ####
 ####################################
+# 長條圖（Bar Chart）
 @app.callback(
     Output('tabs-content-1', 'children'),
     [Input('dropdown-bar-1', 'value'), Input('graph-tabs', 'value')]
 )
 def update_bar_chart(dropdown_value, tab):
+    # 只在 "overview" 分頁時才更新圖表，否則不動
     if tab != 'overview':
         return no_update
+    
+    # 載入旅遊資料集
     df = load_data('travel')
-    # 安全 fallback：若使用者清空下拉，回到預設
+    
+    # 若使用者沒有選擇任何國家（dropdown_value=None），就用預設值
     geo = dropdown_value or DEFAULTS["bar1_geo"]
+    
+    # 呼叫自訂函數生成 bar 圖
     fig1 = generate_bar(df, geo)
     return html.Div([dcc.Graph(id='graph1', figure=fig1)], style={'width': '90%','display': 'inline-block'})
 
+# 圓餅圖（Pie Chart）
 @app.callback(
     Output('tabs-content-2', 'children'),
     [Input('dropdown-pie-1', 'value'), Input('dropdown-pie-2', 'value'), Input('graph-tabs', 'value')]
@@ -338,11 +355,16 @@ def update_pie_chart(dropdown_value_1, dropdown_value_2, tab):
     if tab != 'overview':
         return no_update
     df = load_data('travel')
+    
+    # 沒有選國家/欄位就用 DEFAULTS 的設定
     geo = dropdown_value_1 or DEFAULTS["pie1_geo"]
     field = dropdown_value_2 or DEFAULTS["pie2_field"]
+    
+    # 呼叫自訂函數生成圓餅圖
     fig2 = generate_pie(df, geo, field)
     return html.Div([dcc.Graph(id='graph2', figure=fig2)], style={'width': '90%','display': 'inline-block'})
 
+# 地圖（Map Chart）
 @app.callback(
     Output('tabs-content-3', 'children'),
     [Input('dropdown-map-1', 'value'), Input('dropdown-map-2', 'value'), Input('graph-tabs', 'value')]
@@ -351,11 +373,16 @@ def update_map(dropdown_value_1, dropdown_value_2, tab):
     if tab != 'overview':
         return no_update
     df = load_data('travel')
-    geo = dropdown_value_1 if dropdown_value_1 in _conts or dropdown_value_1 is None else DEFAULTS["map1_geo"]
+    
+    # 如果 dropdown_value_1 有值就用它；否則才用預設
+    geo = dropdown_value_1 if dropdown_value_1 else DEFAULTS["map1_geo"]
+    
     metric = dropdown_value_2 or DEFAULTS["map2_metric"]
+    # 呼叫自訂函數生成地圖
     fig3 = generate_map(df, geo, metric)
     return html.Div([dcc.Graph(id='graph3', figure=fig3)], style={'width': '90%','display': 'inline-block'})
 
+# 盒鬚圖（Box Chart）
 @app.callback(
     Output('tabs-content-4', 'children'),
     [Input('dropdown-box-1', 'value'), Input('dropdown-box-2', 'value'), Input('graph-tabs', 'value')]
@@ -372,7 +399,7 @@ def update_box_chart(dropdown_value_1, dropdown_value_2, tab):
 ####################################
 #### Trip Planner 頁面 callbacks ####
 ####################################
-# 表格 
+# 推薦國家表格 
 @app.callback(
     [Output('planner-table-container', 'children'),
      Output('planner-selected-countries', 'data')],
@@ -396,65 +423,26 @@ def update_trip_planner_table(cost_min, cost_max, acc_types,
 
     df_travel = travel_df.copy()
 
-    # 防呆：住宿成本 min/max 對調
-    if cost_min is not None and cost_max is not None and cost_min > cost_max:
-        cost_min, cost_max = cost_max, cost_min
-
-    # 預處理
-    df_travel['Accommodation cost'] = pd.to_numeric(df_travel['Accommodation cost'], errors='coerce').fillna(0)
-    df_travel['Duration (days)'] = pd.to_numeric(df_travel['Duration (days)'], errors='coerce')
-    df_travel = df_travel.dropna(subset=['Duration (days)'])
-    df_travel = df_travel[df_travel['Duration (days)'] > 0]
-
-    df_travel['acc_trip_cost']  = df_travel['Accommodation cost']
-    df_travel['acc_daily_cost'] = df_travel['acc_trip_cost'] / df_travel['Duration (days)']
-
-    # 條件 1：住宿成本區間
-    if cost_min is not None:
-        df_travel = df_travel[df_travel['Accommodation cost'] >= float(cost_min)]
-    if cost_max is not None:
-        df_travel = df_travel[df_travel['Accommodation cost'] <= float(cost_max)]
-
-    # 條件 2：住宿類型多選
-    if acc_types:
-        df_travel = df_travel[df_travel['Accommodation type'].isin(acc_types)]
+    # 1) 預處理與基本過濾
+    cost_min, cost_max = sanitize_cost_bounds(cost_min, cost_max)
+    df_travel = preprocess_travel_df(travel_df)
+    df_travel = filter_by_cost_and_types(df_travel, cost_min, cost_max, acc_types)
 
     if df_travel.empty:
         return html.Div("沒有符合條件的國家。", style={'color': 'white'}), []
 
+    # 從處理過後的 df_travel 取得國家列表
     matched_countries = sorted(df_travel['Destination'].dropna().unique().tolist())
 
-    # 取國家層欄位（避免取到全空）
-    cols_needed = ['Destination', 'CPI', 'PCE', 'Safety Index', 'Visa_exempt_entry', 'Travel Alert']
-    avail_cols = [c for c in cols_needed if c in df_merged.columns]
-    sub = df_merged[df_merged['Destination'].isin(matched_countries)][avail_cols].copy()
-
-    def first_nonnull(series):
-        for v in series:
-            if pd.notna(v) and str(v).strip() != '':
-                return v
-        return np.nan
-
-    agg_spec = {col: first_nonnull for col in avail_cols if col != 'Destination'}
-    df_country = sub.groupby('Destination', as_index=False).agg(agg_spec)
-    key_cols = ['CPI', 'PCE', 'Safety Index', 'Travel Alert']
-    df_country = df_country.dropna(subset=key_cols, how='any')
-
-    # Travel Alert 門檻
-    default_rank = 3
-    def alert_rank(v): return ALERT_RANK_MAP.get(str(v).strip(), default_rank)
-    if alert_max is not None:
-        max_rank = alert_rank(alert_max)
-        df_country = df_country[df_country['Travel Alert'].apply(alert_rank) <= max_rank]
-
-    if 'exempt' in (visa_only or []):
-        if 'Visa_exempt_entry' in df_country.columns:
-            df_country = df_country[df_country['Visa_exempt_entry'].apply(is_exempt)]
+    # 2) 取國家層資料並依 Alert / Visa 過濾
+    df_country = pick_country_level(df_merged, matched_countries)
+    df_country = filter_by_alert_and_visa(df_country, alert_max, visa_only)
 
     if df_country.empty:
+        # ← 通常是被 Travel Alert 或 Visa 過濾到 0 筆
         return html.Div("沒有符合條件的國家（被 Travel Alert / Visa 過濾掉）。", style={'color': 'white'}), []
 
-    # 聚合住宿成本到國家層級
+    # 聚合住宿成本到國家層級，並合併指標
     agg = df_travel.groupby('Destination', as_index=False).agg(
         trips=('Destination', 'count'),
         median_daily_acc_cost=('acc_daily_cost', 'median'),
@@ -462,68 +450,19 @@ def update_trip_planner_table(cost_min, cost_max, acc_types,
         median_trip_acc_cost=('acc_trip_cost', 'median'),
         mean_trip_acc_cost=('acc_trip_cost', 'mean')
     )
-
     out = df_country.merge(agg, on='Destination', how='inner').rename(columns={'Destination': 'Country'})
 
-    for col in ['CPI','PCE','Safety Index']:
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors='coerce')
+    # 4) 計算分數（安全 + 成本）
+    out = compute_scores(out, w_safety, w_cost)
 
-    # 成本 × CPI 調整
-    cpi_median = out['CPI'].dropna().median() if 'CPI' in out.columns else np.nan
-    def adjust_cost(row):
-        base = row['median_daily_acc_cost']
-        cpi  = row['CPI'] if 'CPI' in row and pd.notna(row['CPI']) else np.nan
-        if pd.notna(base) and pd.notna(cpi) and pd.notna(cpi_median) and cpi_median > 0:
-            return base * (cpi / cpi_median)
-        return base
-    out['adj_daily_acc_cost'] = out.apply(adjust_cost, axis=1)
-
-    s_safety = minmax(out['Safety Index']) if 'Safety Index' in out.columns else None
-    s_cost_raw = minmax(out['adj_daily_acc_cost'])
-    s_cost = 1 - s_cost_raw if s_cost_raw is not None else None
-
-    ws = (w_safety or 0); wc = (w_cost or 0)
-    denom = (ws + wc) or 1
-    ws, wc = ws/denom, wc/denom
-
-    scores = []
-    for i in range(len(out)):
-        parts, wts = [], []
-        if s_safety is not None and pd.notna(s_safety.iloc[i]): parts.append(s_safety.iloc[i]); wts.append(ws)
-        if s_cost   is not None and pd.notna(s_cost.iloc[i]):   parts.append(s_cost.iloc[i]);   wts.append(wc)
-        if len(parts) == 0 or sum(wts) == 0:
-            scores.append(np.nan)
-        else:
-            norm = sum(wts); wts = [w/norm for w in wts]
-            scores.append(100 * sum(p*w for p, w in zip(parts, wts)))
-    out['Score'] = scores
-
-    # 排序 + 取前五
-    out = out.sort_values(by=['Score','Safety Index','adj_daily_acc_cost'], ascending=[False, False, True])
+    # 5) 排序、選前 5 名作為 compare_countries
+    out = out.sort_values(by=['Score', 'Safety Index', 'adj_daily_acc_cost'],
+                          ascending=[False, False, True])  # ← 高分、越安全越前面；成本越低越前面
     compare_countries = out['Country'].head(5).tolist()
 
-    # 顯示表格（簡要）
-    shown_cols = [
-        'Country','Score','Safety Index','Travel Alert','CPI','PCE','Visa_exempt_entry',
-        'trips','median_daily_acc_cost','adj_daily_acc_cost','median_trip_acc_cost'
-    ]
-    available_cols = [c for c in shown_cols if c in out.columns]
-    out_display = out[available_cols].copy()
-
-    if 'Score' in out_display: out_display['Score'] = out_display['Score'].apply(lambda v: fmt(v, 0))
-    for c in ['median_daily_acc_cost','adj_daily_acc_cost','median_trip_acc_cost']:
-        if c in out_display: out_display[c] = out_display[c].apply(lambda v: fmt(v, 0))
-
-    table_component = dash_table.DataTable(
-        data=out_display.to_dict('records'), page_size=10, export_format='csv',
-        sort_action='native', filter_action='native',
-        style_data={'backgroundColor': '#deb522', 'color': 'black'},
-        style_header={'backgroundColor': 'black', 'color': '#deb522', 'fontWeight': 'bold'},
-        style_table={'overflowX': 'auto'},
-        columns=[{'name': col, 'id': col} for col in available_cols]
-    )
-
+    # 6) 輸出表格元件
+    table_component = build_table_component(out)
+    
     return table_component, compare_countries
 
 # 產生雷達 / 長條 / 折線圖（前五名 + 全指標）
@@ -558,6 +497,7 @@ def update_trip_planner_comparison(countries, tab):
 ###############################
 #### Attractions callback ####
 ###############################
+# 使用 geopy 套件將景點名稱轉換為經緯度，並在地圖上標示
 @app.callback(
     [Output('attractions-output-container', 'children'),
      Output('attractions-map-container', 'children')],
@@ -571,53 +511,61 @@ def update_attractions_output(n_clicks, tab, chosen_country):
     if n_clicks == 0 or not chosen_country:
         return (html.Div("請選擇一個國家並按下查詢。", style={'color': 'white'}), no_update)
 
+    # 根據使用者選的國家，過濾出該國家的景點資料
     chosen_df = attractions_df[attractions_df['country'] == chosen_country].copy()
 
+    # 建立表格元件，顯示該國家的所有景點資訊
     table = dash_table.DataTable(
         data=chosen_df.to_dict('records'), page_size=10,
         style_data={'backgroundColor': '#deb522', 'color': 'black'},
         style_header={'backgroundColor': 'black', 'color': '#deb522', 'fontWeight': 'bold'}
     )
 
-    def pick_col(cands):
-        for c in cands:
-            if c in chosen_df.columns:
-                return c
-        return None
-    name_col = pick_col(['attraction', 'Attraction']) or chosen_df.columns[0]
-
+    # 建立地理編碼器：用來把地名轉成經緯度
     geolocator = Nominatim(user_agent="my_dash_app")
+    # RateLimiter：避免短時間太多請求被伺服器擋掉（每次至少間隔 1 秒）
     geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
 
-    points = []
+    points = [] # ← 用來存放每個景點的名稱與座標
+    
+    # 對每一筆景點資料進行地理編碼
     for _, r in chosen_df.iterrows():
-        name = str(r[name_col])
+        name = str(r['attraction'])
         try:
-            location = geocode(name)
+            location = geocode(name) # ← 嘗試查詢景點的經緯度
             if location:
+                # 若成功取得經緯度，就存進 points 清單中
                 points.append({'name': name, 'lat': location.latitude, 'lng': location.longitude})
         except Exception:
+            # 若查詢失敗（例如找不到該景點），就跳過該筆資料
             continue
 
     if not points:
         return table, html.Div("選定國家目前沒有可用座標的景點。", style={'color': 'white'})
 
+    # 建立地圖底圖圖層（使用 OpenStreetMap）
     tile_layer = dl.TileLayer(
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     )
+    
+    # 為每個景點建立一個 Marker（地圖上的小釘子），滑鼠移過去會顯示名稱
     markers = [dl.Marker(position=[p['lat'], p['lng']], children=dl.Tooltip(p['name'])) for p in points]
 
+    # 取出所有經緯度
     lats = [p['lat'] for p in points]; lngs = [p['lng'] for p in points]
+    # 計算地圖顯示的範圍（最南西角 ~ 最北東角）
     south, west = min(lats), min(lngs); north, east = max(lats), max(lngs)
     bounds = [[south, west], [north, east]]
 
     if len(points) == 1:
+        # 若只有一個點 → 直接置中顯示
         center = [points[0]['lat'], points[0]['lng']]
         the_map = dl.Map(id=f"map-{hash(str(bounds))}",
                          children=[tile_layer, dl.LayerGroup(markers)],
                          center=center, zoom=10, style={'width': '100%','height': '600px'})
     else:
+        # 多個點 → 根據 bounds 自動調整視野
         the_map = dl.Map(id=f"map-{hash(str(bounds))}",
                          children=[tile_layer, dl.LayerGroup(markers)],
                          bounds=bounds, style={'width': '100%','height': '600px'})
