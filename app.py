@@ -3,8 +3,6 @@ from dash import Dash, html, dcc, Input, State, Output, dash_table, no_update
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
 import dash_leaflet as dl
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
@@ -96,14 +94,6 @@ app.layout = html.Div([
             dbc.Col(generate_stats_card("Average Days", avg_days, "./assets/calendar.svg"), width=3),
         ], style={'marginBlock': '10px'}),
 
-        dbc.Row([
-            dcc.Tabs(id='tabs', value='travel', children=[
-                dcc.Tab(label='Travel Data', value='travel',
-                        style={'border':'1px line white','backgroundColor':'black','color': '#deb522','fontWeight': 'bold'},
-                        selected_style={'border':'1px solid white','backgroundColor':'black','color': '#deb522','fontWeight': 'bold','textDecoration': 'underline'}),
-            ], style={'padding': '0px'})
-        ]),
-
         # Overview頁面的圖表放置區
         html.Div(id='graph-content')
     ], style={'padding': '0px'})
@@ -124,7 +114,7 @@ def render_tab_content(tab):
             # 第一排：長條 + 圓餅
             dbc.Row([
                 dbc.Col([
-                    html.H3("各大洲或各國不同月份遊客人数", style={'color': '#deb522', 'margin-top': '5px'}),
+                    html.H3("各大洲或各國不同月份遊客人數", style={'color': '#deb522', 'margin-top': '5px'}),
                     dcc.Dropdown(
                         id='dropdown-bar-1',
                         options=geo_options,
